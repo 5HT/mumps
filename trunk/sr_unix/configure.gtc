@@ -1,0 +1,522 @@
+#################################################################
+#								#
+#	Copyright 2001, 2008 Fidelity Information Services, Inc #
+#								#
+#	This source code contains the intellectual property	#
+#	of its copyright holder(s), and is made available	#
+#	under a license.  If you do not know the terms of	#
+#	the license, please stop and do not read further.	#
+#								#
+#################################################################
+# This script must be run with shell, not Cshell, and it must be a standard compliant sh.
+# On Solaris this is in /usr/xpg4/bin/sh.
+
+# In order to test future configure.csh changes, copy a modified version into /usr/library/Vxxx/pro/configure
+# and /usr/library/Vxxx/dbg/configure.  Then execute $cms_tools/kitstart.csh -ti Vxxx and check output log
+
+. ./arch.gtc
+# we need a copy for gtm_test_install since the version above will be deleted.
+cp arch.gtc ..
+
+# Path to the correct echo program
+if [ $arch = "sun"  -o  $arch = "solaris" ]; then
+	echo=/usr/5bin/echo
+elif [ $arch = "linux" ]; then
+	echo="/bin/echo -e"
+else
+	echo=/bin/echo
+fi
+
+# add path to strip for solaris
+PATH="$PATH:/usr/ccs/bin"
+export PATH
+
+# Options to ps
+psopts="-ea"
+
+# GTCM definitions
+if [ -f gtcm_server ]; then
+	deliver_gtcm="yes"
+else
+	deliver_gtcm="no"
+fi
+
+if [ -f gtcm_gnp_server ]; then
+	deliver_gtcm_gnp="yes"
+else
+	deliver_gtcm_gnp="no"
+fi
+
+# Native shared library extension.
+if [ $arch = "hp" -a `uname -m` != "ia64" ]; then
+	ext=".sl"
+else
+	ext=".so"
+fi
+
+# Binaries
+binaries="mupip mumps libgtmshr$ext lke dse  geteuid ftok semstat2"
+
+# Normal scripts - executed by anyone
+nscripts="gtmbase upperc upperc_cp lowerc lowerc_cp"
+
+# Root scripts - only executed by root
+rscripts="gtmstart gtmstop"
+if [ $deliver_gtcm = "yes" ]; then
+	rscripts="$rscripts gtcm_run gtcm_slist"
+	binaries="$binaries gtcm_server gtcm_pkdisp gtcm_play gtcm_shmclean"
+fi
+
+if [ $deliver_gtcm_gnp = "yes" ]; then
+	binaries="$binaries gtcm_gnp_server"
+fi
+
+# Other files
+hlpfiles="gdehelp.dat gtmhelp.dat"
+if [ $arch = "sco" ]; then
+	ofiles="$hlpfiles esnecil"
+elif [ $arch = "sun"  -o  $arch = "solaris" ]; then
+	ofiles="$hlpfiles libgtmrpc.a gtm_descript.h gtmidef.h"
+	binaries="$binaries gtm_svc"
+elif [ $arch = "dux"  -o  $arch = "hp"  -o  $arch = "ibm" -o $arch = "linux" ]; then
+	ofiles="$hlpfiles gtmxc_types.h"
+else
+	ofiles="$hlpfiles"
+fi
+
+# Files that need to have $gtm_dist, $echo, etc. set in them.
+pathmods="gtmbase.gtc gtmstart.gtc gtmstop.gtc gtmcshrc.gtc gtmprofile.gtc"
+
+if [ $deliver_gtcm = "yes" ]; then
+	pathmods="$pathmods gtcm_run.gtc gtcm_slist.gtc"
+fi
+
+if [ "`./geteuid`" != "root" ] ; then
+	$echo "You must run Configure as root."
+	exit
+fi
+
+$echo "                     GT.M Configuration Script"
+$echo "Copyright "`date '+%Y'`" Fidelity National Information Services, Inc. Use of this"
+$echo "software is restricted by the provisions of your license agreement."
+$echo ""
+
+# create temporary file to test for valid user and group names
+touch tmp_owngrp
+$echo "What account should own the files? (bin) \c"
+read resp
+if [ "$resp" = "" ] ; then
+	owner="bin"
+else
+	owner=$resp
+	chown $resp tmp_owngrp 2> /dev/null
+	if [ 1 = "$?" ] ; then
+		echo $resp is not a valid user name - exiting!
+		rm tmp_owngrp
+		exit
+	fi
+fi
+
+$echo "Should execution of GT.M to be restricted to a group? (y or n) \c"
+read resp
+if [ "$resp" = "Y" -o "$resp" = "y" ] ; then
+	$echo "Enter group name? \c"
+	read group
+	if [ "$group" != "" ] ; then
+		chgrp $group tmp_owngrp 2> /dev/null
+		if [ 1 = "$?" ] ; then
+			echo $group is not a valid group name - exiting!
+			rm tmp_owngrp
+			exit 1
+		fi
+	fi
+else
+	group=""
+fi
+
+rm tmp_owngrp
+
+$echo "In what directory should GT.M be installed? \c"
+read gtmdist
+
+$echo ""
+
+if [ -d $gtmdist ]; then
+	$echo "Directory $gtmdist exists. If you proceed with this installation then"
+	$echo "some files will be over-written. Is it ok to proceed? (y or n) \c"
+	read resp
+	if [ "$resp" = "Y" -o "$resp" = "y" ] ; then
+		chmod 0755 $gtmdist
+		chown $owner $gtmdist
+		chgrp bin $gtmdist
+	else
+		exit
+	fi
+
+else
+	$echo "Directory $gtmdist does not exist. Do you wish to create it as part of"
+	$echo "this installation? (y or n) \c"
+
+	read resp
+	if [ "$resp" = "Y" -o "$resp" = "y" ] ; then
+		mkdir $gtmdist
+		chmod 0755 $gtmdist
+		chown $owner $gtmdist
+		chgrp bin $gtmdist
+	else
+		exit
+	fi
+fi
+
+
+server_id=42
+
+$echo ""
+$echo "Installing GT.M...."
+$echo ""
+
+# Create $gtmdist/utf8 if this platform can support "UTF-8" mode.
+
+if [ -d "utf8" ]; then
+	# If package has utf8 directory, see if system has libicu and locale
+	# Setup library path (in prep for looking for libicu)
+	is64bit_gtm=`file mumps | grep 64-bit | wc -l`
+	if [ $is64bit_gtm -eq 1 ] ; then
+		library_path="/usr/local/lib64 /usr/local/lib /usr/lib /usr/lib32"
+	else
+		library_path="/usr/local/lib /usr/lib /usr/lib32"
+	fi
+	# Look for libicu
+	for libpath in $library_path
+	do
+		if [ -d $libpath ]; then
+			found_icu=`\ls -1 $libpath/libicu*36* 2>/dev/null | wc -l`
+			if [ "$found_icu" -ne 0 ] ; then
+				# Determine if they are the right 64/32 bit libraries
+				if [ $arch = "ibm" ] ; then
+					is64bit_icu=`nm -X64 $libpath/libicu*36* 2>/dev/null | head -1 | wc -l`
+				elif [ $arch = "linux" ] ; then
+					is64bit_icu=`file $libpath/libicu*36* | grep 64-bit | wc -l`
+				fi
+
+				if [ \( "$is64bit_gtm" -eq 1 \) -a \( "$is64bit_icu" -ne 0 \) ] ; then
+					save_icu_libpath=$libpath
+					break
+				elif [ \( "$is64bit_gtm" -ne 1 \) -a \( "$is64bit_icu" -eq 0 \) ] ; then
+					save_icu_libpath=$libpath
+					break
+				else
+					found_icu=0
+				fi
+
+			fi
+		fi
+	done
+	# Look for locale
+	utflocale=`locale -a | grep -i en_us | grep -i utf | grep '8$'`
+	# If both libicu and locale are on system then install UTF-8 support
+	if [ \( "$found_icu" -ne 0 \)  -a \( "$utflocale" != "" \) ] ; then
+		doutf8=1
+	else
+		doutf8=0
+	fi
+else
+	# If utf8 dir does not exist in package, can't install UTF-8 support
+	doutf8=0
+fi
+
+# Modify the scripts as necessary for target configuration
+cat << SEDSCRIPT > sedin$$
+s|ARCH|$arch|g
+s|ECHO|"$echo"|g
+s|GTMDIST|$gtmdist|g
+s|SERVERID|$server_id|g
+SEDSCRIPT
+for i in $pathmods
+do
+	dest=`basename $i .gtc`
+	sed -f sedin$$ $i > $dest
+	if [ "$doutf8" -ne 0 ]; then
+		cd utf8
+		ln -s ../$dest $dest
+		cd ..
+	fi
+done
+rm sedin$$
+
+if [ "$doutf8" -ne 0 ]; then
+	if [ ! -d $gtmdist/utf8 ]; then
+		mkdir $gtmdist/utf8
+	fi
+fi
+
+# Install COPYING if it is applicable
+file=COPYING
+if [ -f $file ]; then
+	cp $file $gtmdist
+	if [ "$doutf8" -ne 0 ]; then
+		ln -s ../$file $gtmdist/utf8/$file
+	fi
+fi
+
+# Install the .cshrc and .profile files
+cp gtmprofile gtmcshrc $gtmdist
+chmod 0755 $gtmdist/gtmprofile
+chown $owner $gtmdist/gtmprofile
+chmod 0755 $gtmdist/gtmcshrc
+chown $owner $gtmdist/gtmcshrc
+
+# Install the normal scripts
+for i in $nscripts
+do
+	cp $i $gtmdist
+	chmod 0755 $gtmdist/$i
+	chown $owner $gtmdist/$i
+done
+
+# Install the root scripts
+for i in $rscripts
+do
+	cp $i $gtmdist
+	chmod 0744 $gtmdist/$i
+	chown root $gtmdist/$i
+done
+
+# Install the normal binaries
+for i in $binaries
+do
+	if [ $arch = "sun" -o $arch = "linux" ]; then
+		install -g bin -o $owner -m 755 $i $gtmdist
+	elif [ $arch = "ibm" ]; then
+		/usr/bin/install -f $gtmdist -M 755 -O $owner -G bin $i
+	elif [ -x /usr/sbin/install ]; then
+		/usr/sbin/install -f $gtmdist -m 755 -u $owner -g bin $i $gtmdist
+	else
+		install -f $gtmdist -m 755 -u $owner -g bin $i $gtmdist
+	fi
+#		strip $gtmdist/$i >/dev/null 2>&1
+done
+
+# Install other individual files
+for i in  $ofiles
+do
+	cp $i $gtmdist
+	chown $owner $gtmdist/$i
+done
+if [ $arch = "sun" ]; then
+	ranlib -t $gtmdist/libgtmrpc.a
+fi
+
+# For linux systems, attempt to execute the chcon command to allow use of the libgtmshr shared library. This
+# command is required on many modern SELinux based systems but depends on the filesystem in use (requires context
+# support). For that reason, we attempt the command and if it works, great. If it doesn't, oh well we tried.
+if [ -f /usr/bin/chcon ]; then
+	chcon -t texrel_shlib_t $gtmdist/libgtmshr$ext > /dev/null 2>&1
+fi
+
+# Install GDE, GTMHELP, and all the percent routines
+cp *.o *.m $gtmdist
+
+# Install a mirror image (using soft links) of $gtmdist under $gtmdist/utf8 if this platform can support "UTF-8" mode.
+if [ "$doutf8" -ne 0 ]; then
+	cd utf8
+	for file in *
+	do
+		# Skip directories
+		if [ -d $file ]; then
+			continue
+		fi
+		# Install .o files
+		base="`basename $file .o`"
+		if [ "$base" != "$file" ]; then
+			cp $file $gtmdist/utf8
+		else
+			# Soft link everything else
+			if [ -f $gtmdist/utf8/$file ]; then
+				rm -f $gtmdist/utf8/$file
+			fi
+			if [ -f $gtmdist/$file ]; then
+				ln -s ../$file $gtmdist/utf8/$file
+			fi
+		fi
+	done
+	cd ..
+fi
+
+$echo ""
+$echo "All of the GT.M MUMPS routines are distributed with uppercase names."
+$echo "You can create lowercase copies of these routines if you wish, but"
+$echo "to avoid problems with compatibility in the future, consider keeping"
+$echo "only the uppercase versions of the files."
+$echo ""
+$echo "Do you want uppercase and lowercase versions of the MUMPS routines? (y or n)\c"
+read resp
+if [ "$resp" = "Y" -o "$resp" = "y" ] ; then
+	$echo ""
+	$echo "Creating lowercase versions of the MUMPS routines."
+	(cd $gtmdist; ./lowerc_cp *.m)
+	if [ "$doutf8" -ne 0 ]; then
+		(cd $gtmdist/utf8; ./lowerc_cp *.m)
+	fi
+fi
+
+gtmroutines=$gtmdist
+gtmgbldir=$gtmdist/mumps.gld
+gtm_dist=$gtmdist
+export gtm_dist
+export gtmroutines
+export gtmgbldir
+
+$echo ""
+$echo "Compiling all of the MUMPS routines. This may take a moment."
+$echo ""
+
+# Ensure we are NOT in UTF-8 mode
+gtm_chset="M"
+export gtm_chset
+(cd $gtmdist; ./mumps -nowarning *.m)
+if [ "$doutf8" -ne 0 ]; then
+	# Ensure we ARE in UTF-8 mode
+	utflocale=`locale -a | grep -i en_us | grep -i utf | grep '8$'`
+	if [ $utflocale = "" ]; then
+		utflocale="C"
+	fi
+	LC_CTYPE=$utflocale
+	export LC_CTYPE
+	unset LC_ALL
+	gtm_chset="UTF-8"
+	export gtm_chset
+	if [ $arch = "ibm" ]; then
+		export LIBPATH=$save_icu_libpath
+	else
+		export LD_LIBRARY_PATH=$save_icu_libpath
+	fi
+	(export gtm_dist=$gtmdist/utf8; cd $gtm_dist; ./mumps -nowarning *.m)
+	gtm_chset="M"
+	export gtm_chset
+fi
+
+chmod 0644 $gtmdist/*.m
+chmod 0644 $gtmdist/*.o
+chown $owner $gtmdist/*.m
+chown $owner $gtmdist/*.o
+chgrp bin $gtmdist/*.m
+chgrp bin $gtmdist/*.o
+
+if [ "$doutf8" -ne 0 ]; then
+	chmod 0644 $gtmdist/utf8/*.m
+	chmod 0644 $gtmdist/utf8/*.o
+	chown $owner $gtmdist/utf8/*.m
+	chown $owner $gtmdist/utf8/*.o
+	chgrp bin $gtmdist/utf8/*.m
+	chgrp bin $gtmdist/utf8/*.o
+fi
+
+gtm_dist=$gtmdist
+export gtm_dist
+
+gtmroutines=$gtmdist
+export gtmroutines
+
+# Create the global directories for the help databases.
+
+gtmgbldir=$gtmdist/gtmhelp.gld
+export gtmgbldir
+
+$gtmdist/mumps -direct <<GDE.in1
+Do ^GDE
+Change -segment DEFAULT	-block=2048	-file=$gtmdist/gtmhelp.dat
+Change -region DEFAULT	-record=1020	-key=255
+Exit
+GDE.in1
+
+gtmgbldir=$gtmdist/gdehelp.gld
+export gtmgbldir
+
+$gtmdist/mumps -direct <<GDE.in2
+Do ^GDE
+Change -segment DEFAULT	-block=2048	-file=$gtmdist/gdehelp.dat
+Change -region DEFAULT	-record=1020	-key=255
+Exit
+GDE.in2
+
+other_object_files="CHK2LEV.o CHKOP.o GENDASH.o GENOUT.o GETNEAR.o GTMHELP.o GTMHLPLD.o LOAD.o LOADOP.o"
+other_object_files="$other_object_files LOADVX.o MSG.o TTTGEN.o TTTSCAN.o UNLOAD.o"
+csh_script_files="lowerc.csh lowerc_cp.csh upperc.csh upperc_cp.csh"
+
+# make database files read only
+chmod 0444 $gtmdist/*.dat
+chmod 0444 $gtmdist/*.gld
+
+# $other_object_files, $csh_script_files should be removed unconditionally
+\rm -rf $other_object_files $csh_script_files
+
+if [ -d utf8 ]; then
+	cd utf8
+	\rm -rf $other_object_files $csh_script_files
+	cd ..
+fi
+
+# change group ownership of all files if requested
+if [ "$group" != "" ] ; then
+	chgrp -R $group $gtmdist
+	chmod -R o-rwx $gtmdist
+fi
+
+# Install real gtmsecshr with special permissions in $gtmdist/gtmsecshrdir
+tgtmsecshrdir=$gtmdist/gtmsecshrdir
+mkdir $tgtmsecshrdir
+chmod 700 $tgtmsecshrdir
+chgrp bin $tgtmsecshrdir
+
+# Install gtmsecshr and the wrapper with special permissions
+if [ $arch = "sun" -o $arch = "linux" ]; then
+	install -m 4755 -o root -g bin gtmsecshr $gtmdist
+	install -m 4500 -o root -g bin gtmsecshrdir/gtmsecshr $tgtmsecshrdir/gtmsecshr
+elif [ $arch = "ibm" ]; then
+	/usr/bin/install -f $gtmdist -M 4755 -O root -G bin gtmsecshr
+	/usr/bin/install -f $tgtmsecshrdir -M 4500 -O root -G bin gtmsecshrdir/gtmsecshr
+elif [ -x /usr/sbin/install ]; then
+	/usr/sbin/install -f $gtmdist -m 4755 -u root -g bin gtmsecshr $gtmdist
+	/usr/sbin/install -f $tgtmsecshrdir -m 4500 -u root -g bin gtmsecshrdir/gtmsecshr $tgtmsecshrdir
+else
+	install -f $gtmdist -m 4755 -u root -g bin gtmsecshr $gtmdist
+	install -f $tgtmsecshrdir -m 4500 -u root -g bin gtmsecshrdir/gtmsecshr $tgtmsecshrdir
+fi
+
+strip $gtmdist/gtmsecshr > /dev/null 2>&1
+strip $tgtmsecshrdir/gtmsecshr > /dev/null 2>&1
+
+# change group ownership of wrapper if requested
+# also remove user privileges for wrapper if group changed
+if [ "$group" != "" ] ; then
+	chgrp $group $gtmdist/gtmsecshr
+	chmod 4550 $gtmdist/gtmsecshr
+fi
+
+# leave nothing writeable
+chmod a-w $gtmdist
+chmod a-w $gtmdist/*
+
+if [ -d $gtmdist/utf8 ]; then
+	chmod a-w $gtmdist/utf8/*
+fi
+
+$echo ""
+$echo "Installation completed. Would you like all the temporary files"
+$echo "removed from this directory? (y or n) \c"
+read resp
+
+if [ "$resp" = "Y" -o "$resp" = "y" ] ; then
+	\rm -rf $binaries $pathmods $rscripts $nscripts $dirs configure \
+		*.gtc gtm* GDE*.o _*.m _*.o mumps.dat mumps.gld geteuid \
+		esnecil *.hlp core *.h libgtmrpc.a *.m gdehelp.* COPYING
+	if [ -d utf8 ]; then
+		cd utf8
+		\rm -rf $binaries $pathmods $rscripts $nscripts $dirs configure \
+			*.gtc gtm* GDE*.o _*.m _*.o mumps.dat mumps.gld geteuid \
+			esnecil *.hlp core *.h libgtmrpc.a *.m gdehelp.* COPYING
+		cd ..
+		rm -rf utf8
+	fi
+fi
