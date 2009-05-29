@@ -20,9 +20,10 @@ setenv gtm_inc `pwd`/sr_darwin
 setenv gtm_tools `pwd`/sr_darwin
 setenv gtm_version_change 1
 source sr_unix/gtm_env.csh
+setenv distro ubuntu
 make -f sr_unix/comlist.mk -I./sr_unix -I./sr_darwin buildtypes=dbg gtm_ver=`pwd` clean
 </code>
 
 = Status = 
-currently the build bombs out while trying to compile
-the M programs.
+Currently bombs out because I did not update some header for platform support:
+#error UNSUPPORTED PLATFORM
