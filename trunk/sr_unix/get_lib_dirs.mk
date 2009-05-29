@@ -51,14 +51,22 @@ ifeq ($(linux_build_type),32)
 common_dirs_sp=unix_gnp unix_cm unix_nsb unix port_cm port
 else
 common_dirs_sp=unix_gnp unix_cm unix port_cm port
-endif
-endif
-endif
-endif
-endif
-endif
-endif
-endif
+endif	# Linux 32
+else
+ifeq ($(gt_os_type), Darwin)
+ifeq ($(linux_build_type),32)
+common_dirs_sp=unix_gnp unix_cm unix_nsb unix port_cm port
+else
+common_dirs_sp=unix_gnp unix_cm unix port_cm port
+endif	# Darwin 32
+endif	# Darwin
+endif	# Linux
+endif	# Cygwin
+endif	# OS/390
+endif	# AIX
+endif	# SunOS
+endif	# HP-UX
+endif	# OSF1
 ifeq ($(gt_os_type), SunOS)
 lib_dirs_sp=sun sparc $(common_dirs_sp)
 endif
@@ -73,6 +81,14 @@ endif
 
 ifeq ($(findstring CYGWIN,$(gt_os_type)), CYGWIN)
 lib_dirs_sp=linux i386 x86_regs $(common_dirs_sp)
+endif
+
+ifeq ($(gt_os_type), Darwin)
+ifeq ($(linux_build_type),32)
+lib_dirs_sp=darwin i386 x86_regs $(common_dirs_sp)
+else
+lib_dirs_sp=darwin x86_64 x86_regs $(common_dirs_sp)
+endif
 endif
 
 ifeq ($(gt_os_type), Linux)
